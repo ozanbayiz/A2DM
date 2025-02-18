@@ -1,5 +1,5 @@
 import torch.nn as nn
-from resnet import Resnet1D
+from .resnet import Resnet1D
 
 class Encoder(nn.Module):
     def __init__(

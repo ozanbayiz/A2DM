@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from encdec import Encoder, Decoder
+from .encdec import Encoder, Decoder
 
 class ResNetVAE(nn.Module):
     def __init__(
