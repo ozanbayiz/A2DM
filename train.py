@@ -3,8 +3,8 @@ import torch
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from vae import VAE
-from resnet_vae import ResNetVAE
+from models.simple_vae import VAE
+from models.resnet_vae import ResNetVAE
 from dataloader import get_dataloader
 from tqdm import tqdm
 
@@ -36,7 +36,7 @@ def train_epoch(model, dataloader, optimizer, device):
 
 def main():
     # --- Hyperparameters ---
-    data_dir = "../slahmr"  # Change this to your data directory
+    data_dir = "./sns_slahmr"  # Change this to your data directory
     batch_size = 32
     epochs = 50
     latent_dim = 128
