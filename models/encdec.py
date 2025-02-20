@@ -40,27 +40,32 @@ class Encoder(nn.Module):
         return self.model(x)  # Output shape: (B, output_emb_width, T_out)
 
 class Decoder(nn.Module):
-    def __init__(self,
-                 output_emb_width=512,
-                 input_emb_width=138,  # final desired output channels
-                 down_t=2,
-                 stride_t=2,
-                 width=512,
-                 depth=3,
-                 dilation_growth_rate=3,
-                 activation='relu',
-                 norm='BN'):
+    def __init__(
+        self,
+        output_emb_width=512,
+        input_emb_width=138,  # final desired output channels
+        down_t=2,
+        stride_t=2,
+        width=512,
+        depth=3,
+        dilation_growth_rate=3,
+        activation='relu',
+        norm='BN'
+    ):
         super().__init__()
         blocks = []
         # Initial convolution to expand latent features.
         blocks.append(nn.Conv1d(output_emb_width, width, kernel_size=3, stride=1, padding=1))
         blocks.append(nn.ReLU())
+        # Calculate the correct scale factor for upsampling.
+        scale_factor = stride_t
         # Upsample in time.
         for _ in range(down_t):
             block = nn.Sequential(
                 Resnet1D(width, depth, dilation_growth_rate, reverse_dilation=True, activation=activation, norm=norm),
-                nn.Upsample(scale_factor=stride_t, mode='nearest'),
-                nn.Conv1d(width, width, kernel_size=3, stride=1, padding=1)
+                # nn.Upsample(scale_factor=scale_factor, mode='nearest'),
+                # nn.Conv1d(width, width, kernel_size=3, stride=1, padding=1),
+                nn.ConvTranspose1d(width, width, kernel_size=4, stride=stride_t, padding=1)
             )
             blocks.append(block)
         blocks.append(nn.Conv1d(width, width, kernel_size=3, stride=1, padding=1))

@@ -63,7 +63,15 @@ class ResConv1DBlock(nn.Module):
         return x + x_orig
 
 class Resnet1D(nn.Module):
-    def __init__(self, n_in, n_depth, dilation_growth_rate=1, reverse_dilation=True, activation='relu', norm=None):
+    def __init__(
+        self, 
+        n_in: int, 
+        n_depth: int, 
+        dilation_growth_rate: int=1, 
+        reverse_dilation: bool=False, 
+        activation: str='relu', 
+        norm: str=None
+    ):
         super().__init__()
         blocks = [
             ResConv1DBlock(n_in, n_in, dilation=dilation_growth_rate ** depth, activation=activation, norm=norm)

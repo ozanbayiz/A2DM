@@ -5,18 +5,19 @@ from .encdec import Encoder, Decoder
 
 class ResNetVAE(nn.Module):
     def __init__(
-            self, 
-            latent_dim=128, 
-            T_in=100, 
-            input_dim=138,
-            encoder_output_channels=512, 
-            down_t=2,
-            width=512,
-            depth=3,
-            dilation_growth_rate=3,
-            activation='relu',
-            norm='BN'
-        ):
+        self, 
+        latent_dim: int=128, 
+        T_in: int=100, 
+        input_dim: int=138,
+        encoder_output_channels: int=512, 
+        down_t: int=2, # number of downsampling blocks
+        stride_t: int=2, # stride of the downsampling blocks
+        width: int=512,
+        depth: int=3,
+        dilation_growth_rate: int=3,
+        activation: str='relu',
+        norm: str='BN'
+    ):
         """
         Args:
             latent_dim: Dimensionality of the latent space.
@@ -34,7 +35,7 @@ class ResNetVAE(nn.Module):
             input_emb_width=input_dim,
             output_emb_width=encoder_output_channels,
             down_t=down_t,
-            stride_t=2,
+            stride_t=stride_t,
             width=width,
             depth=depth,
             dilation_growth_rate=dilation_growth_rate,
@@ -42,8 +43,7 @@ class ResNetVAE(nn.Module):
             norm=norm
         )
         # Calculate T_out after downsampling.
-        # With each block downsampling by a factor of 2, T_out = T_in / (2^down_t).
-        self.T_out = T_in // (2 ** down_t)
+        self.T_out = T_in // (stride_t ** down_t)
         self.flattened_size = encoder_output_channels * self.T_out
 
         self.fc_mu = nn.Linear(self.flattened_size, latent_dim)
@@ -54,12 +54,12 @@ class ResNetVAE(nn.Module):
             output_emb_width=encoder_output_channels,
             input_emb_width=input_dim,
             down_t=down_t,
-            stride_t=2,
-            width=512,
-            depth=3,
-            dilation_growth_rate=3,
-            activation='relu',
-            norm='BN'
+            stride_t=stride_t,
+            width=width,
+            depth=depth,
+            dilation_growth_rate=dilation_growth_rate,
+            activation=activation,
+            norm=norm
         )
 
     def encode(self, x):
@@ -68,7 +68,6 @@ class ResNetVAE(nn.Module):
         Returns:
             mu, logvar: each of shape (B, latent_dim)
         """
-        # Permute input to (B, input_dim, T) for Conv1d.
         h = self.encoder(x)  # -> (B, encoder_output_channels, T_out)
         h = h.view(x.size(0), -1)  # Flatten to (B, flattened_size)
         mu = self.fc_mu(h)
@@ -90,6 +89,8 @@ class ResNetVAE(nn.Module):
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
         recon = self.decode(z)
+        # print(recon.shape, x.shape)
+        # assert recon.shape == x.shape
         return recon, mu, logvar
 
 def vae_loss(recon_x, x, mu, logvar):
