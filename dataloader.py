@@ -13,6 +13,7 @@ class DuetMotionDataset(Dataset):
         """
         self.data_files = glob.glob(os.path.join(data_dir, '*.npz'))
         print(f"Found {len(self.data_files)} files in {data_dir}")
+
     def __len__(self):
         return len(self.data_files)
 
@@ -28,15 +29,15 @@ class DuetMotionDataset(Dataset):
         
         motion1 = np.concatenate([
             relative_trans[0],       # (100, 3)
-            relative_orient[0], # (100, 3)
-            data['pose_body'][0]    # (100, 63)
+            relative_orient[0],      # (100, 3)
+            data['pose_body'][0]     # (100, 63)
         ], axis=1)  # -> (100, 69)
 
         # For person 2:
         motion2 = np.concatenate([
             relative_trans[1],       # (100, 3)
-            relative_orient[1], # (100, 3)
-            data['pose_body'][1]    # (100, 63)
+            relative_orient[1],      # (100, 3)
+            data['pose_body'][1]     # (100, 63)
         ], axis=1)  # -> (100, 69)
 
         # Concatenate the two persons' features along the feature dimension:
@@ -45,9 +46,15 @@ class DuetMotionDataset(Dataset):
         motion = torch.tensor(motion, dtype=torch.float32)
         return motion
 
-def get_dataloader(data_dir, batch_size=32, shuffle=True, num_workers=0):
+def get_dataloader(data_dir, batch_size=32, shuffle=True, num_workers=0, sampler=None):
     dataset = DuetMotionDataset(data_dir)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers)
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=(shuffle if sampler is None else False),
+        num_workers=num_workers,
+        sampler=sampler
+    )
 
 # For testing purposes:
 if __name__ == '__main__':
