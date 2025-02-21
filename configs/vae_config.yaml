@@ -1,0 +1,19 @@
+VAE:
+  latent_dim: 128
+  T_in: 100
+  input_dim: 138
+  encoder_output_channels: 512
+  down_t: 2
+  stride_t: 2
+  width: 512
+  depth: 3
+  dilation_growth_rate: 3
+
+Training:
+  batch_size: 64
+  epochs: 500
+  learning_rate: 0.0001
+  kl_loss_weight: 0.2
+  device: mps
+
+Checkpoint: "checkpoints/vae_epoch_500.pt"
