@@ -44,7 +44,14 @@ class DuetMotionDataset(Dataset):
         motion = np.concatenate([motion1, motion2], axis=1)  # -> (100, 138)
         # Convert to float tensor
         motion = torch.tensor(motion, dtype=torch.float32)
-        return motion
+
+        # Create motion mask
+        motion_mask = data['track_mask'][..., None] * np.ones((1, 1, 69))  # (2, 100, 69)
+        motion_mask = motion_mask.transpose(1, 0, 2)  # (100, 2, 69)
+        motion_mask = motion_mask.reshape(100, 138)  # (100, 138)
+        motion_mask = torch.tensor(motion_mask, dtype=torch.int8)
+
+        return motion, motion_mask
 
 def get_dataloader(data_dir, batch_size=32, shuffle=True, num_workers=0, sampler=None):
     dataset = DuetMotionDataset(data_dir)

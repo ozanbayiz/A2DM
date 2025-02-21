@@ -15,8 +15,6 @@ class ResNetVAE(nn.Module):
         width: int=512,
         depth: int=3,
         dilation_growth_rate: int=3,
-        activation: str='relu',
-        norm: str='BN'
     ):
         """
         Args:
@@ -32,15 +30,14 @@ class ResNetVAE(nn.Module):
 
         # Build encoder and decoder.
         self.encoder = Encoder(
+            T_in=T_in,
             input_emb_width=input_dim,
-            output_emb_width=encoder_output_channels,
+            enc_emb_width=encoder_output_channels,
             down_t=down_t,
             stride_t=stride_t,
             width=width,
             depth=depth,
             dilation_growth_rate=dilation_growth_rate,
-            activation=activation,
-            norm=norm
         )
         # Calculate T_out after downsampling.
         self.T_out = T_in // (stride_t ** down_t)
@@ -51,15 +48,14 @@ class ResNetVAE(nn.Module):
 
         self.fc_decode = nn.Linear(latent_dim, self.flattened_size)
         self.decoder = Decoder(
-            output_emb_width=encoder_output_channels,
-            input_emb_width=input_dim,
+            T_out=T_in,
+            enc_emb_width=encoder_output_channels,
+            output_emb_width=input_dim,
             down_t=down_t,
             stride_t=stride_t,
             width=width,
             depth=depth,
             dilation_growth_rate=dilation_growth_rate,
-            activation=activation,
-            norm=norm
         )
 
     def encode(self, x):
@@ -89,17 +85,7 @@ class ResNetVAE(nn.Module):
         mu, logvar = self.encode(x)
         z = self.reparameterize(mu, logvar)
         recon = self.decode(z)
-        # print(recon.shape, x.shape)
-        # assert recon.shape == x.shape
         return recon, mu, logvar
-
-def vae_loss(recon_x, x, mu, logvar):
-    """
-    VAE loss = reconstruction loss (MSE) + KL divergence.
-    """
-    recon_loss = F.mse_loss(recon_x, x, reduction='sum')
-    kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-    return recon_loss + kl_loss
 
 # For testing purposes:
 if __name__ == '__main__':
