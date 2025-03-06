@@ -1,7 +1,8 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .encdec import Encoder, Decoder
+from encdec import Encoder, Decoder
 
 class ResNetVAE(nn.Module):
     def __init__(
@@ -15,6 +16,7 @@ class ResNetVAE(nn.Module):
         width: int=512,
         depth: int=3,
         dilation_growth_rate: int=3,
+        pos_emb_dim: int=0,
     ):
         """
         Args:
@@ -27,11 +29,12 @@ class ResNetVAE(nn.Module):
         super().__init__()
         self.latent_dim = latent_dim
         self.T_in = T_in
+        self.pos_emb_dim = pos_emb_dim
 
         # Build encoder and decoder.
         self.encoder = Encoder(
             T_in=T_in,
-            input_emb_width=input_dim,
+            input_emb_width=input_dim + pos_emb_dim*4,
             enc_emb_width=encoder_output_channels,
             down_t=down_t,
             stride_t=stride_t,
@@ -58,12 +61,69 @@ class ResNetVAE(nn.Module):
             dilation_growth_rate=dilation_growth_rate,
         )
 
+    @staticmethod
+    def encode_sine_cosine(x: torch.Tensor, emb_dim: int=78) -> torch.Tensor:
+        """
+        Encodes a tensor of shape (B, T, 3) into a higher-dimensional tensor using sine and cosine embeddings.
+        
+        For each of the 3 coordinates, we apply K frequency functions to produce
+        [sin(freq * x), cos(freq * x)] pairs, resulting in an embedding of size 6*K.
+        
+        Args:
+            x (torch.Tensor): Input tensor of shape (B, T, 3).
+            emb_dim (int): Desired output embedding dimension, must be a multiple of 6.
+        
+        Returns:
+            torch.Tensor: Output tensor of shape (B, T, emb_dim).
+        """
+        # Ensure that emb_dim is divisible by 6.
+        assert emb_dim % 6 == 0, "Embedding dimension must be a multiple of 6."
+        
+        # Determine the number of frequencies per coordinate.
+        num_freqs = emb_dim // 6
+        
+        # Create a tensor of frequencies. Here we use powers of 2 multiplied by pi.
+        # This means the i-th frequency is: 2**i * pi for i in range(num_freqs).
+        freqs = (2 ** torch.arange(num_freqs, dtype=x.dtype, device=x.device)) * math.pi
+        
+        # Reshape x to (B, T, 3, 1) so that we can broadcast multiplication with freqs (shape: (num_freqs,))
+        x_expanded = x.unsqueeze(-1)  # shape: (B, T, 3, 1)
+        
+        # Multiply each coordinate by all frequency values.
+        x_scaled = x_expanded * freqs  # shape: (B, T, 3, num_freqs)
+        
+        # Compute sine and cosine embeddings.
+        sin_embed = torch.sin(x_scaled)  # shape: (B, T, 3, num_freqs)
+        cos_embed = torch.cos(x_scaled)  # shape: (B, T, 3, num_freqs)
+        
+        # Concatenate sine and cosine along the last dimension to get pairs.
+        # The resulting shape is (B, T, 3, 2*num_freqs).
+        embed = torch.cat([sin_embed, cos_embed], dim=-1)
+        
+        # Flatten the last two dimensions so that the final shape is (B, T, 3 * 2 * num_freqs) == (B, T, emb_dim)
+        embed = embed.view(x.shape[0], x.shape[1], -1)
+    
+        return embed
+    
+
     def encode(self, x):
         """
         x: (B, T, input_dim)
         Returns:
             mu, logvar: each of shape (B, latent_dim)
         """
+        if self.pos_emb_dim > 0:
+            person_1_trans = x[:, :, :3]
+            person_2_trans = x[:, :, 69:72]
+            person_1_trans = self.encode_sine_cosine(person_1_trans)
+            person_2_trans = self.encode_sine_cosine(person_2_trans)
+
+            person_1_orient = x[:, :, 3:6]
+            person_2_orient = x[:, :, 72:75]
+            person_1_orient = self.encode_sine_cosine(person_1_orient)
+            person_2_orient = self.encode_sine_cosine(person_2_orient)
+
+            x = torch.cat([x, person_1_trans, person_2_trans, person_1_orient, person_2_orient], dim=-1)
         h = self.encoder(x)  # -> (B, encoder_output_channels, T_out)
         h = h.view(x.size(0), -1)  # Flatten to (B, flattened_size)
         mu = self.fc_mu(h)
