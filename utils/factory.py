@@ -18,6 +18,7 @@ from dataset.solo import (
     SoloTranslationDataset,
     SoloOrientationDataset,
     SoloPoseDataset,
+    SoloPose6DDataset,
     SoloFullMotionDataset,
 )
 
@@ -57,7 +58,8 @@ def get_dataset(name: str, **kwargs) -> Dataset:
         'solo_translation': SoloTranslationDataset,
         'solo_orientation': SoloOrientationDataset,
         'solo_pose': SoloPoseDataset,
-        'solo_full': SoloFullMotionDataset
+        'solo_pose_6d': SoloPose6DDataset,
+        'solo_full': SoloFullMotionDataset,
     }
     
     if name not in datasets:

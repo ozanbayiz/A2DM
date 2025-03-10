@@ -3,9 +3,11 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from pathlib import Path
-from utils.rot_and_trans import (
+from utils.rotation_transformations import (
     transform_relative_orientation,
-    transform_relative_translation
+    transform_relative_translation,
+    axis_angle_to_matrix,
+    matrix_to_6d
 )
 
 #------------------------------------------------------------------------------------------------
@@ -97,6 +99,64 @@ class SoloPoseDataset(Dataset):
             mask = np.ones_like(pose)
         
         return torch.tensor(pose, dtype=torch.float32), torch.tensor(mask, dtype=torch.bool)
+
+class SoloPose6DDataset(Dataset):
+    """
+    Dataset for loading SMPL pose parameters and converting joint rotations 
+    from axis-angle (3D) to continuous 6D representation.
+    """
+    def __init__(self, data_dir: str, person_idx: int = 0):
+        self.data_dir = Path(data_dir)
+        self.file_paths = [f for f in os.listdir(self.data_dir) if f.endswith('.npz')]
+        self.person_idx = person_idx
+        
+    def __len__(self):
+        return len(self.file_paths)
+    
+    def __getitem__(self, idx):
+        file_path = self.data_dir / self.file_paths[idx]
+        data = np.load(file_path)
+        
+        # Load pose in axis-angle format
+        pose = data['pose_body'][self.person_idx]  # Shape: [T, J*3]
+        
+        # Create mask for single person
+        if 'track_mask' in data:
+            mask = data['track_mask'][self.person_idx]
+        else:
+            mask = np.ones_like(pose[:, 0:1])
+        
+        # Convert pose to PyTorch tensor
+        pose_tensor = torch.tensor(pose, dtype=torch.float32)
+        
+        # Get dimensions
+        seq_len = pose_tensor.shape[0]
+        total_rotation_dims = pose_tensor.shape[1]
+        num_joints = total_rotation_dims // 3
+        
+        # Reshape to [T*J, 3] to process all rotations at once
+        pose_reshaped = pose_tensor.reshape(-1, 3)
+        
+        # Convert all axis-angles to rotation matrices in one batch operation
+        rotation_matrices = axis_angle_to_matrix(pose_reshaped)  # [T*J, 3, 3]
+        
+        # Convert all rotation matrices to 6D representation in one operation
+        pose_6d = matrix_to_6d(rotation_matrices)  # [T*J, 6]
+        
+        # Reshape back to [T, J*6]
+        pose_6d = pose_6d.reshape(seq_len, num_joints * 6)
+        
+        return pose_6d, torch.tensor(mask, dtype=torch.bool)
+    
+    def get_original_pose(self, idx):
+        """
+        Get the original axis-angle pose without conversion.
+        Useful for debugging or comparison.
+        """
+        file_path = self.data_dir / self.file_paths[idx]
+        data = np.load(file_path)
+        pose = data['pose_body'][self.person_idx]
+        return torch.tensor(pose, dtype=torch.float32)
 
 
 #------------------------------------------------------------------------------------------------

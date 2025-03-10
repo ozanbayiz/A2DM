@@ -4,16 +4,16 @@ import torch.nn.functional as F
 
 
 class ResNetBlock1D(nn.Module):
-    """1D ResNet block with GroupNorm and SiLU activation"""
+    """1D ResNet block with LayerNorm and SiLU activation"""
     
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, groups=8):
         super().__init__()
         self.use_conv_shortcut = in_channels != out_channels
         
-        self.norm1 = nn.GroupNorm(groups, in_channels)
+        self.norm1 = nn.LayerNorm(in_channels)
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size, padding=padding)
         
-        self.norm2 = nn.GroupNorm(groups, out_channels)
+        self.norm2 = nn.LayerNorm(out_channels)
         self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=kernel_size, padding=padding)
         
         if self.use_conv_shortcut:
@@ -21,11 +21,17 @@ class ResNetBlock1D(nn.Module):
     
     def forward(self, x):
         h = x
+        # LayerNorm expects [B, T, C] format, so we need to permute
+        h = h.permute(0, 2, 1)  # [B, C, T] -> [B, T, C]
         h = self.norm1(h)
+        h = h.permute(0, 2, 1)  # [B, T, C] -> [B, C, T]
         h = F.silu(h)
         h = self.conv1(h)
         
+        # Same for the second normalization
+        h = h.permute(0, 2, 1)  # [B, C, T] -> [B, T, C]
         h = self.norm2(h)
+        h = h.permute(0, 2, 1)  # [B, T, C] -> [B, C, T]
         h = F.silu(h)
         h = self.conv2(h)
         

@@ -1,5 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 import torch
 import torch.nn.functional as F
@@ -8,7 +7,130 @@ import torch.nn.functional as F
 # Conversion Functions - Between different rotation representations
 #------------------------------------------------------------------------------------------------
 
-def axis_angle_to_quaternion(a: torch.Tensor, eps=1e-7) -> torch.Tensor:
+def axis_angle_to_matrix(axis_angle):
+    """
+    Converts axis-angle rotations to rotation matrices.
+    
+    Args:
+        axis_angle: Tensor of shape (B, 3) where each row is an axis-angle rotation.
+                   The axis is expected to be non-zero; the norm encodes the rotation angle.
+    
+    Returns:
+        Rotation matrices of shape (B, 3, 3).
+    """
+    if isinstance(axis_angle, torch.Tensor):
+        # PyTorch implementation
+        # Compute the rotation angle (theta) and normalize the axis.
+        theta = torch.norm(axis_angle, dim=-1, keepdim=True)  # (B, 1)
+        axis = axis_angle / (theta + 1e-8)                    # (B, 3)
+        
+        # Expand theta dimensions for trigonometric functions.
+        theta = theta.unsqueeze(-1)                           # (B, 1, 1)
+        cos_theta = torch.cos(theta)                          # (B, 1, 1)
+        sin_theta = torch.sin(theta)                          # (B, 1, 1)
+        
+        # Create the skew-symmetric matrix K for each axis.
+        x = axis[:, 0:1]  # (B, 1)
+        y = axis[:, 1:2]  # (B, 1)
+        z = axis[:, 2:3]  # (B, 1)
+        zeros = torch.zeros_like(x)
+        K = torch.stack([zeros, -z, y,
+                         z, zeros, -x,
+                         -y, x, zeros], dim=-1)  # (B, 9)
+        K = K.view(-1, 3, 3)                     # (B, 3, 3)
+        
+        # Identity matrix expanded to batch size.
+        I = torch.eye(3, device=axis_angle.device).unsqueeze(0).expand(axis_angle.size(0), 3, 3)
+        
+        # Rodrigues' rotation formula.
+        return I + sin_theta * K + (1 - cos_theta) * torch.bmm(K, K)
+    else:
+        # NumPy implementation
+        return R.from_rotvec(axis_angle).as_matrix()
+
+def matrix_to_6d(R):
+    """
+    Converts rotation matrices to a 6D representation by taking the 
+    first two columns and flattening them.
+    
+    Args:
+        R: Rotation matrices of shape (B, 3, 3).
+    
+    Returns:
+        6D representations of shape (B, 6).
+    """
+    return R[:, :, :2].reshape(R.size(0), 6)
+
+def sixd_to_matrix(sixd):
+    """
+    Converts a 6D continuous representation back to a rotation matrix.
+    This uses a Gram-Schmidt-like orthogonalization process.
+    
+    Args:
+        sixd: 6D representations of shape (B, 6).
+    
+    Returns:
+        Rotation matrices of shape (B, 3, 3).
+    """
+    # Split the 6D vector into two 3D vectors.
+    a1 = sixd[:, 0:3]
+    a2 = sixd[:, 3:6]
+    
+    # Normalize the first vector.
+    b1 = F.normalize(a1, dim=-1)
+    
+    # Make the second vector orthogonal to the first.
+    proj = (b1 * a2).sum(dim=-1, keepdim=True)
+    b2 = a2 - proj * b1
+    b2 = F.normalize(b2, dim=-1)
+    
+    # The third vector is the cross product of b1 and b2.
+    b3 = torch.cross(b1, b2, dim=-1)
+    
+    # Stack the three vectors as columns to form the rotation matrix.
+    R = torch.stack([b1, b2, b3], dim=-1)
+    return R
+
+def matrix_to_axis_angle(matrix):
+    """
+    Converts rotation matrices to axis-angle representations.
+    
+    Args:
+        matrix: Rotation matrices. PyTorch tensor of shape (B, 3, 3) or 
+                NumPy array of shape (3, 3).
+    
+    Returns:
+        Axis-angle representations, where the norm of each vector 
+        represents the rotation angle (in radians) and the direction is the rotation axis.
+    """
+    if isinstance(matrix, torch.Tensor):
+        # PyTorch implementation
+        # Compute the trace of each rotation matrix.
+        trace = matrix[:, 0, 0] + matrix[:, 1, 1] + matrix[:, 2, 2]  # (B,)
+        
+        # Clamp the value inside the valid range for arccos.
+        cos_theta = torch.clamp((trace - 1) / 2, -1 + 1e-7, 1 - 1e-7)
+        theta = torch.acos(cos_theta)  # (B,)
+        
+        # Compute the sine of theta and prepare for division.
+        sin_theta = torch.sin(theta).unsqueeze(-1)  # (B, 1)
+        
+        # Compute the rotation axis components.
+        axis_x = matrix[:, 2, 1] - matrix[:, 1, 2]
+        axis_y = matrix[:, 0, 2] - matrix[:, 2, 0]
+        axis_z = matrix[:, 1, 0] - matrix[:, 0, 1]
+        axis = torch.stack([axis_x, axis_y, axis_z], dim=-1)  # (B, 3)
+        
+        # Avoid division by zero; for very small rotations, the axis can be arbitrary.
+        axis = axis / (2 * sin_theta + 1e-8)
+        
+        # Multiply by the angle to obtain the axis-angle representation.
+        return axis * theta.unsqueeze(-1)
+    else:
+        # NumPy implementation
+        return R.from_matrix(matrix).as_rotvec()
+
+def axis_angle_to_quaternion(a, eps=1e-7):
     """
     Convert axis-angle vectors to quaternions (w, x, y, z) in PyTorch.
     
@@ -31,37 +153,11 @@ def axis_angle_to_quaternion(a: torch.Tensor, eps=1e-7) -> torch.Tensor:
     xyz = axis * half_angles.sin()
     return torch.cat([w, xyz], dim=-1)  # shape (..., 4)
 
-def axis_angle_to_matrix(axis_angle):
-    """
-    Convert axis-angle representation to rotation matrix.
-    
-    Args:
-        axis_angle: np.ndarray of shape (3,) containing axis-angle representation
-        
-    Returns:
-        rotation_matrix: np.ndarray of shape (3, 3) containing rotation matrix
-    """
-    # Use scipy's Rotation class for stable conversions
-    return R.from_rotvec(axis_angle).as_matrix()
-
-def matrix_to_axis_angle(matrix):
-    """
-    Convert rotation matrix to axis-angle representation.
-    
-    Args:
-        matrix: np.ndarray of shape (3, 3) containing rotation matrix
-        
-    Returns:
-        axis_angle: np.ndarray of shape (3,) containing axis-angle representation
-    """
-    # Use scipy's Rotation class for stable conversions
-    return R.from_matrix(matrix).as_rotvec()
-
 #------------------------------------------------------------------------------------------------
 # Quaternion Operations - Basic quaternion math
 #------------------------------------------------------------------------------------------------
 
-def quaternion_inverse(q: torch.Tensor) -> torch.Tensor:
+def quaternion_inverse(q):
     """
     Compute the inverse of a quaternion.
     
@@ -76,7 +172,7 @@ def quaternion_inverse(q: torch.Tensor) -> torch.Tensor:
     q_inv[..., 1:] = -q_inv[..., 1:]
     return q_inv
 
-def quaternion_multiply(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+def quaternion_multiply(q1, q2):
     """
     Multiply two quaternions.
     
@@ -97,7 +193,7 @@ def quaternion_multiply(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
         w1*z2 + x1*y2 - y1*x2 + z1*w2
     ], dim=-1)
 
-def compute_relative_quaternion(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+def compute_relative_quaternion(q1, q2):
     """
     Compute relative quaternion q_rel = q2 * q1^-1
     
@@ -115,7 +211,7 @@ def compute_relative_quaternion(q1: torch.Tensor, q2: torch.Tensor) -> torch.Ten
 # Distance and Velocity Calculations - Computing geodesic distances and velocities
 #------------------------------------------------------------------------------------------------
 
-def quaternion_geodesic_distance(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+def quaternion_geodesic_distance(q1, q2):
     """
     Compute geodesic distance between two quaternions.
     
@@ -133,7 +229,7 @@ def quaternion_geodesic_distance(q1: torch.Tensor, q2: torch.Tensor) -> torch.Te
     # Compute geodesic distance (angle)
     return 2 * torch.acos(dot_product)
 
-def geodesic_distance(a1: torch.Tensor, a2: torch.Tensor) -> torch.Tensor:
+def geodesic_distance(a1, a2):
     """
     Compute the geodesic distance (in radians) between two batches of 
     axis-angle vectors.
@@ -158,7 +254,7 @@ def geodesic_distance(a1: torch.Tensor, a2: torch.Tensor) -> torch.Tensor:
     angles = 2.0 * torch.acos(dot)  # (...)
     return angles
 
-def compute_angular_velocity(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+def compute_angular_velocity(q1, q2):
     """
     Compute angular velocity between two quaternions as geodesic distance.
     

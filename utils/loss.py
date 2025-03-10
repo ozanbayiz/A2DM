@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from utils.rot_and_trans import axis_angle_to_quaternion
+from utils.rotation_transformations import axis_angle_to_quaternion
 
 #------------------------------------------------------------------------------------------------
 # Helper functions for quaternion operations

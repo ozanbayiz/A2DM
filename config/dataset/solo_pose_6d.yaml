@@ -1,0 +1,4 @@
+name: solo_pose_6d
+params:
+  data_dir: data/sns_slahmr_64
+  person_idx: 0
