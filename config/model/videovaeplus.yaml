@@ -1,0 +1,10 @@
+name: videovaeplus
+params:
+  input_dim: 63            # Flattened dimension (e.g., 3*64*64=12288 for RGB 64x64 images)
+  base_channels: 128          # Base channel count
+  channel_multipliers: [1, 2, 4]  # Channel multipliers at each level
+  num_res_blocks: 2           # Number of ResNet blocks per level
+  z_dim: 256                  # Latent dimension size
+  use_attention: true         # Whether to use attention
+  attention_heads: 8          # Number of attention heads
+  norm_groups: 16             # Number of groups for GroupNorm
