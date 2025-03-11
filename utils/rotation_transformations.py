@@ -59,7 +59,17 @@ def matrix_to_6d(R):
     Returns:
         6D representations of shape (B, 6).
     """
-    return R[:, :, :2].reshape(R.size(0), 6)
+    print(f"R.shape: {R.shape}")
+    
+    # Check if the input is already in 6D format
+    if len(R.shape) == 2 and R.shape[1] == 6:
+        # Already in 6D format, return as is
+        return R
+    elif len(R.shape) == 3 and R.shape[1] == 3 and R.shape[2] == 3:
+        # Convert from rotation matrix to 6D
+        return R[:, :, :2].reshape(R.size(0), 6)
+    else:
+        raise ValueError(f"Unexpected input shape: {R.shape}. Expected (B, 3, 3) or (B, 6)")
 
 def sixd_to_matrix(sixd):
     """
@@ -375,3 +385,287 @@ def inverse_transform_translation(rel_trans, init_trans):
         trans[i] = trans[i-1] + rel_trans[i]
     
     return trans
+
+def axis_angle_to_6d(axis_angle):
+    """
+    Converts axis-angle rotations directly to 6D representations.
+    Optimized for efficiency with minimal memory allocations.
+    
+    Args:
+        axis_angle: Tensor of shape (..., 3) where the norm represents 
+                   the rotation angle and the direction is the rotation axis.
+    
+    Returns:
+        6D representations of shape (..., 6).
+    """
+    # Compute theta and normalize axis in a single pass
+    theta = torch.norm(axis_angle, dim=-1, keepdim=True)
+    mask = theta > 1e-8
+    
+    # Pre-compute trig functions once
+    cos_theta = torch.cos(theta)
+    sin_theta = torch.sin(theta)
+    one_minus_cos = 1.0 - cos_theta
+    
+    # Handle zero and non-zero rotations efficiently
+    result = torch.zeros(*axis_angle.shape[:-1], 6, device=axis_angle.device, dtype=axis_angle.dtype)
+    
+    # Only process non-zero rotations (avoid unnecessary calculations)
+    if mask.any():
+        # Normalize the axis where needed (avoiding redundant calculations)
+        axis = torch.empty_like(axis_angle)
+        # Fix: use the same expanded mask for both sides of the assignment
+        expanded_mask = mask.expand_as(axis_angle)
+        axis[expanded_mask] = axis_angle[expanded_mask] / theta.expand_as(axis_angle)[expanded_mask]
+        
+        # Extract components (only once)
+        x = axis[..., 0:1]
+        y = axis[..., 1:2]
+        z = axis[..., 2:3]
+        
+        # Pre-compute common terms to avoid redundant calculations
+        xx_one_minus_cos = x * x * one_minus_cos
+        xy_one_minus_cos = x * y * one_minus_cos
+        xz_one_minus_cos = x * z * one_minus_cos
+        yy_one_minus_cos = y * y * one_minus_cos
+        yz_one_minus_cos = y * z * one_minus_cos
+        z_sin = z * sin_theta
+        y_sin = y * sin_theta
+        x_sin = x * sin_theta
+        
+        # Compute first column elements
+        result[..., 0:1] = cos_theta + xx_one_minus_cos
+        result[..., 1:2] = xy_one_minus_cos + z_sin
+        result[..., 2:3] = xz_one_minus_cos - y_sin
+        
+        # Compute second column elements
+        result[..., 3:4] = xy_one_minus_cos - z_sin
+        result[..., 4:5] = cos_theta + yy_one_minus_cos
+        result[..., 5:6] = yz_one_minus_cos + x_sin
+        
+        # For zero rotations, the result is already initialized as identity's first two columns
+        if (~mask).any():
+            # Process zero rotations separately
+            identity_tensor = torch.tensor([1., 0., 0., 0., 1., 0.], device=result.device, dtype=result.dtype)
+            zero_rotation_indices = torch.where(~mask.squeeze(-1))[0]
+            result[zero_rotation_indices] = identity_tensor
+    else:
+        # All rotations are zero, set to identity matrix first two columns
+        result[..., 0] = 1.0
+        result[..., 4] = 1.0
+    
+    return result
+
+def rotation_6d_to_axis_angle(sixd):
+    """
+    Converts 6D rotation representations to axis-angle.
+    Optimized for efficiency with minimal tensor operations.
+    
+    Args:
+        sixd: 6D representations of shape (..., 6).
+    
+    Returns:
+        Axis-angle representations of shape (..., 3).
+    """
+    # Reshape for batch processing if needed
+    original_shape = sixd.shape[:-1]
+    
+    # First convert 6D to rotation matrix
+    x1, y1, z1 = sixd[..., 0], sixd[..., 1], sixd[..., 2]
+    x2, y2, z2 = sixd[..., 3], sixd[..., 4], sixd[..., 5]
+    
+    # Normalize first vector
+    b1_norm = torch.sqrt(x1*x1 + y1*y1 + z1*z1) + 1e-8
+    x1 /= b1_norm
+    y1 /= b1_norm
+    z1 /= b1_norm
+    
+    # Make second vector orthogonal
+    dot = x1*x2 + y1*y2 + z1*z2
+    x2 = x2 - dot * x1
+    y2 = y2 - dot * y1
+    z2 = z2 - dot * z1
+    
+    # Normalize second vector
+    b2_norm = torch.sqrt(x2*x2 + y2*y2 + z2*z2) + 1e-8
+    x2 /= b2_norm
+    y2 /= b2_norm
+    z2 /= b2_norm
+    
+    # Cross product for third vector
+    x3 = y1*z2 - z1*y2
+    y3 = z1*x2 - x1*z2
+    z3 = x1*y2 - y1*x2
+    
+    # Construct full rotation matrix
+    R = torch.empty(*original_shape, 3, 3, device=sixd.device, dtype=sixd.dtype)
+    R[..., 0, 0], R[..., 0, 1], R[..., 0, 2] = x1, x2, x3
+    R[..., 1, 0], R[..., 1, 1], R[..., 1, 2] = y1, y2, y3
+    R[..., 2, 0], R[..., 2, 1], R[..., 2, 2] = z1, z2, z3
+    
+    # Use a more robust matrix to axis-angle conversion
+    # Compute the trace
+    trace = R[..., 0, 0] + R[..., 1, 1] + R[..., 2, 2]
+    
+    # Create output tensor directly
+    axis_angle = torch.empty(*original_shape, 3, device=sixd.device, dtype=sixd.dtype)
+    
+    # Handle different cases based on trace value
+    # For trace > 0, regular case
+    cos_theta = (trace - 1) * 0.5
+    mask_regular = cos_theta > -0.99999
+    
+    # For mask_regular, use the standard formula
+    if mask_regular.any():
+        theta = torch.acos(torch.clamp(cos_theta[mask_regular], -1.0 + 1e-7, 1.0 - 1e-7))
+        sin_theta = torch.sin(theta)
+        
+        # Only compute for non-zero sin_theta to avoid division by zero
+        non_zero_sin = sin_theta > 1e-6
+        if non_zero_sin.any():
+            combined_mask = mask_regular[mask_regular][non_zero_sin]
+            factor = torch.zeros_like(sin_theta)
+            factor[non_zero_sin] = 0.5 / sin_theta[non_zero_sin]
+            
+            # Get rotation matrix elements for regular rotations
+            r_regular = R[mask_regular]
+            
+            # Calculate axis
+            axis_x = r_regular[..., 2, 1] - r_regular[..., 1, 2]
+            axis_y = r_regular[..., 0, 2] - r_regular[..., 2, 0]
+            axis_z = r_regular[..., 1, 0] - r_regular[..., 0, 1]
+            
+            # Only update non-zero sin values
+            temp_angle = torch.zeros(*r_regular.shape[:-2], 3, device=sixd.device, dtype=sixd.dtype)
+            temp_angle[non_zero_sin, 0] = axis_x[non_zero_sin] * factor[non_zero_sin]
+            temp_angle[non_zero_sin, 1] = axis_y[non_zero_sin] * factor[non_zero_sin]
+            temp_angle[non_zero_sin, 2] = axis_z[non_zero_sin] * factor[non_zero_sin]
+            
+            # Multiply by theta
+            theta_expanded = theta.unsqueeze(-1).expand_as(temp_angle)
+            temp_angle = temp_angle * theta_expanded
+            
+            # Assign to the final output
+            axis_angle[mask_regular] = temp_angle
+    
+    # For small or zero rotations
+    small_angles = (cos_theta > 0.99999) & mask_regular
+    if small_angles.any():
+        axis_angle[small_angles] = torch.zeros(3, device=sixd.device, dtype=sixd.dtype)
+    
+    # For 180-degree rotations (trace near -1)
+    mask_180 = ~mask_regular
+    if mask_180.any():
+        r_180 = R[mask_180]
+        
+        # Handle 180-degree rotations more carefully
+        diag = torch.stack([r_180[..., 0, 0], r_180[..., 1, 1], r_180[..., 2, 2]], dim=-1)
+        
+        # Find the largest diagonal element
+        max_diag, max_idx = torch.max(diag, dim=-1)
+        
+        # Calculate the axis for each rotation
+        axis_180 = torch.zeros(*r_180.shape[:-2], 3, device=sixd.device, dtype=sixd.dtype)
+        
+        # Handle each axis case
+        for i in range(3):
+            axis_mask = max_idx == i
+            if axis_mask.any():
+                # For x-axis
+                if i == 0:
+                    axis_180[axis_mask, 0] = torch.sqrt((r_180[axis_mask, 0, 0] + 1) * 0.5)
+                    factor = 0.5 / axis_180[axis_mask, 0]
+                    axis_180[axis_mask, 1] = r_180[axis_mask, 0, 1] * factor
+                    axis_180[axis_mask, 2] = r_180[axis_mask, 0, 2] * factor
+                # For y-axis
+                elif i == 1:
+                    axis_180[axis_mask, 1] = torch.sqrt((r_180[axis_mask, 1, 1] + 1) * 0.5)
+                    factor = 0.5 / axis_180[axis_mask, 1]
+                    axis_180[axis_mask, 0] = r_180[axis_mask, 1, 0] * factor
+                    axis_180[axis_mask, 2] = r_180[axis_mask, 1, 2] * factor
+                # For z-axis
+                else:
+                    axis_180[axis_mask, 2] = torch.sqrt((r_180[axis_mask, 2, 2] + 1) * 0.5)
+                    factor = 0.5 / axis_180[axis_mask, 2]
+                    axis_180[axis_mask, 0] = r_180[axis_mask, 2, 0] * factor
+                    axis_180[axis_mask, 1] = r_180[axis_mask, 2, 1] * factor
+        
+        # Multiply by pi (180 degrees)
+        axis_180 = axis_180 * torch.tensor([3.14159], device=sixd.device, dtype=sixd.dtype)
+        
+        # Assign to the final output
+        axis_angle[mask_180] = axis_180
+    
+    return axis_angle
+
+def main():
+    """Test the accuracy and performance of the conversion functions."""
+    # Set random seed for reproducibility
+    torch.manual_seed(42)
+    np.random.seed(42)
+    
+    # Test case 1: Generate random axis-angle rotations
+    print("Testing axis-angle to 6D to axis-angle conversion...")
+    batch_size = 10000  # Increased for better timing measurement
+    axis_angle = torch.randn(batch_size, 3)
+    
+    # Normalize some to small angles, some to large angles to test different cases
+    magnitudes = torch.rand(batch_size, 1) * 3.14159  # 0 to π
+    axis_angle_normalized = F.normalize(axis_angle, dim=-1) * magnitudes
+    
+    # Speed test
+    import time
+    start_time = time.time()
+    
+    # Convert to 6D and back
+    sixd = axis_angle_to_6d(axis_angle_normalized)
+    elapsed_forward = time.time() - start_time
+    
+    start_time = time.time()
+    axis_angle_reconstructed = rotation_6d_to_axis_angle(sixd)
+    elapsed_backward = time.time() - start_time
+    
+    # Compare original and reconstructed axis-angle by comparing resulting matrices
+    original_matrices = axis_angle_to_matrix(axis_angle_normalized)
+    reconstructed_matrices = axis_angle_to_matrix(axis_angle_reconstructed)
+    
+    # Compute error as the Frobenius norm of matrix difference
+    error = torch.norm(original_matrices - reconstructed_matrices, dim=(-2, -1))
+    mean_error = error.mean().item()
+    max_error = error.max().item()
+    
+    print(f"Mean matrix error: {mean_error:.6f}")
+    print(f"Max matrix error: {max_error:.6f}")
+    print(f"Test passed: {mean_error < 1e-4}")
+    print(f"Forward conversion time (ms): {elapsed_forward*1000:.2f}")
+    print(f"Backward conversion time (ms): {elapsed_backward*1000:.2f}")
+    
+    # Test case 2: Test with specific known rotations
+    print("\nTesting with specific rotations...")
+    # No rotation (identity)
+    identity = torch.zeros(1, 3)
+    # 90 degrees around X
+    rot_x = torch.tensor([[1.0, 0.0, 0.0]]) * (3.14159 / 2)
+    # 180 degrees around Y
+    rot_y = torch.tensor([[0.0, 1.0, 0.0]]) * 3.14159
+    # Combination of rotations
+    combined = torch.tensor([[0.7, 0.7, 0.0]]) * (3.14159 / 3)
+    
+    test_cases = [identity, rot_x, rot_y, combined]
+    test_names = ["Identity", "90° X-rotation", "180° Y-rotation", "Combined rotation"]
+    
+    for name, case in zip(test_names, test_cases):
+        sixd = axis_angle_to_6d(case)
+        reconstructed = rotation_6d_to_axis_angle(sixd)
+        
+        # Compare matrices
+        original_matrix = axis_angle_to_matrix(case)
+        reconstructed_matrix = axis_angle_to_matrix(reconstructed)
+        
+        error = torch.norm(original_matrix - reconstructed_matrix).item()
+        print(f"{name}: Error = {error:.6f}")
+    
+    print("\nAll tests completed!")
+
+if __name__ == "__main__":
+    main()

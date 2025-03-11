@@ -44,8 +44,10 @@ def get_model(name: str, config: Dict[str, Any] = None) -> nn.Module:
 
 def load_model(name: str, config: Dict[str, Any] = None) -> nn.Module:
     """Load model by name with configuration."""
-    model = get_model(name, config)
-    model.load_state_dict(torch.load(f"outputs/{name}_{config['dataset']}/checkpoints/best_model.pt"))
+    model = get_model(name, config['model']['params'])
+    ckpt_path = f"outputs/{name}_{config['dataset']['name']}/checkpoints/best_model.pt"
+    ckpt = torch.load(ckpt_path, map_location=torch.device('cpu'), weights_only=False)
+    model.load_state_dict(ckpt['model_state_dict'])
     return model
 
 #------------------------------------------------------------------------------------------------

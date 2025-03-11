@@ -5,15 +5,10 @@ import numpy as np
 import math
 import warnings
 
-# Try to import xFormers for memory-efficient attention
-try:
-    import xformers
-    import xformers.ops
-    # XFORMERS_AVAILABLE = True
-    XFORMERS_AVAILABLE = False
-except ImportError:
-    XFORMERS_AVAILABLE = False
-    warnings.warn("xFormers not available, falling back to standard attention. Install xformers for memory-efficient attention.")
+# Import x-transformers instead of xformers
+from x_transformers import TransformerWrapper, Encoder as XEncoder, Decoder as XDecoder
+from x_transformers import Attention, AttentionLayers
+from x_transformers.x_transformers import AbsolutePositionalEmbedding
 
 
 class PositionalEncoding(nn.Module):
@@ -49,7 +44,7 @@ class MemoryEfficientTransformerEncoderLayer(nn.Module):
     
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, use_xformers=True):
         super(MemoryEfficientTransformerEncoderLayer, self).__init__()
-        self.use_xformers = use_xformers and XFORMERS_AVAILABLE
+        self.use_xformers = use_xformers
         
         # Self-attention
         if self.use_xformers:
@@ -124,7 +119,7 @@ class MemoryEfficientTransformerDecoderLayer(nn.Module):
     
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, use_xformers=True):
         super(MemoryEfficientTransformerDecoderLayer, self).__init__()
-        self.use_xformers = use_xformers and XFORMERS_AVAILABLE
+        self.use_xformers = use_xformers
         
         # Self-attention and cross-attention
         if self.use_xformers:
@@ -283,33 +278,32 @@ class MemoryEfficientTransformerDecoder(nn.Module):
 
 
 class Encoder(nn.Module):
-    """Transformer Encoder with distribution tokens for VAE"""
+    """Transformer Encoder with distribution tokens for VAE using x-transformers"""
     
     def __init__(self, input_dim, latent_dim, d_model=512, nhead=8, 
-                 num_encoder_layers=6, dim_feedforward=2048, dropout=0.1, use_xformers=True):
+                 num_encoder_layers=6, dim_feedforward=2048, dropout=0.1, **kwargs):
         super(Encoder, self).__init__()
         
         # Input projection
         self.input_projection = nn.Linear(input_dim, d_model)
         
-        # Positional encoding
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
-        
         # Distribution tokens (μ and Σ tokens)
         self.mu_token = nn.Parameter(torch.randn(1, 1, d_model))
         self.sigma_token = nn.Parameter(torch.randn(1, 1, d_model))
         
-        # Transformer encoder
-        encoder_layer = MemoryEfficientTransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            use_xformers=use_xformers
-        )
-        self.transformer_encoder = MemoryEfficientTransformerEncoder(
-            encoder_layer=encoder_layer,
-            num_layers=num_encoder_layers
+        # X-Transformer encoder
+        self.transformer_encoder = TransformerWrapper(
+            dim = d_model,
+            max_seq_len = 512,  # Assuming max sequence length
+            attn_layers = AttentionLayers(
+                dim = d_model,
+                depth = num_encoder_layers,
+                heads = nhead,
+                ff_mult = dim_feedforward // d_model,
+                attn_dropout = dropout,
+                ff_dropout = dropout,
+                causal = False
+            )
         )
         
         # Output projections for latent space distribution parameters
@@ -331,9 +325,6 @@ class Encoder(nn.Module):
         # Project input to d_model dimension
         x = self.input_projection(src)  # [batch_size, seq_len, d_model]
         
-        # Add positional encoding
-        x = self.pos_encoder(x)  # [batch_size, seq_len, d_model]
-        
         # Prepare distribution tokens for batch
         mu_tokens = self.mu_token.expand(batch_size, 1, -1)  # [batch_size, 1, d_model]
         sigma_tokens = self.sigma_token.expand(batch_size, 1, -1)  # [batch_size, 1, d_model]
@@ -341,15 +332,12 @@ class Encoder(nn.Module):
         # Prepend distribution tokens to sequence
         x = torch.cat([mu_tokens, sigma_tokens, x], dim=1)  # [batch_size, seq_len+2, d_model]
         
-        # Ensure dimensions are correct for transformer (seq_len, batch_size, d_model)
-        x = x.permute(1, 0, 2)  # [seq_len+2, batch_size, d_model]
-        
-        # Apply transformer encoder
-        memory = self.transformer_encoder(x)  # [seq_len+2, batch_size, d_model]
+        # Apply transformer encoder - x-transformers uses batch-first format by default
+        memory = self.transformer_encoder(x)  # [batch_size, seq_len+2, d_model]
         
         # Extract distribution parameters from the first two tokens
-        mu_embedding = memory[0]  # [batch_size, d_model]
-        logvar_embedding = memory[1]  # [batch_size, d_model]
+        mu_embedding = memory[:, 0]  # [batch_size, d_model]
+        logvar_embedding = memory[:, 1]  # [batch_size, d_model]
         
         # Project to latent dimension
         mu = self.mu_projection(mu_embedding)  # [batch_size, latent_dim]
@@ -364,43 +352,56 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    """Transformer Decoder for motion generation"""
+    """Transformer Decoder for motion generation using x-transformers"""
     
     def __init__(self, output_dim, latent_dim, seq_len, d_model=512, nhead=8,
-                 num_decoder_layers=6, dim_feedforward=2048, dropout=0.1, use_xformers=True):
+                 num_decoder_layers=6, dim_feedforward=2048, dropout=0.1, **kwargs):
         super(Decoder, self).__init__()
         
         # Store sequence length
         self.seq_len = seq_len
         
-        # Positional encoding for temporal queries
-        self.pos_encoder = PositionalEncoding(d_model, dropout)
-        
         # Projection from latent dim to d_model
         self.latent_projection = nn.Linear(latent_dim, d_model)
         
-        # Temporal query tokens (will be filled with positional encodings)
-        self.query_embed = nn.Sequential(
-            nn.Linear(d_model, d_model),
-            nn.ReLU(),
-            nn.Linear(d_model, d_model)
+        # Query embedding for decoding
+        self.query_embed = nn.Parameter(torch.randn(1, seq_len, d_model))
+        
+        # X-Transformer decoder (cross-attention setup)
+        # First, transformer for processing the latent vector
+        self.context_transformer = TransformerWrapper(
+            dim = d_model,
+            max_seq_len = 8,  # Small value since we only have one latent token
+            attn_layers = AttentionLayers(
+                dim = d_model,
+                depth = 2,  # Small number of layers to process context
+                heads = nhead,
+                ff_mult = dim_feedforward // d_model,
+                causal = False
+            )
         )
         
-        # Transformer decoder
-        decoder_layer = MemoryEfficientTransformerDecoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            use_xformers=use_xformers
-        )
-        self.transformer_decoder = MemoryEfficientTransformerDecoder(
-            decoder_layer=decoder_layer,
-            num_layers=num_decoder_layers
+        # Main decoder with cross-attention
+        self.transformer_decoder = TransformerWrapper(
+            dim = d_model,
+            max_seq_len = seq_len,
+            attn_layers = AttentionLayers(
+                dim = d_model,
+                depth = num_decoder_layers,
+                heads = nhead,
+                ff_mult = dim_feedforward // d_model,
+                cross_attend = True,  # Enable cross-attention
+                ff_dropout = dropout,
+                attn_dropout = dropout,
+                causal = False
+            )
         )
         
         # Output projection
         self.output_projection = nn.Linear(d_model, output_dim)
+        
+        # Positional encoding
+        self.pos_embedding = AbsolutePositionalEmbedding(d_model, seq_len)
     
     def forward(self, z):
         """
@@ -417,34 +418,32 @@ class Decoder(nn.Module):
         # Project latent vector to d_model dimension
         memory = self.latent_projection(z)  # [batch_size, d_model]
         
-        # Repeat memory to create a sequence
+        # Reshape to sequence with length 1
         memory = memory.unsqueeze(1)  # [batch_size, 1, d_model]
-        memory = memory.expand(-1, 1, -1)  # [batch_size, 1, d_model]
-        memory = memory.permute(1, 0, 2)  # [1, batch_size, d_model]
+        
+        # Process memory with context transformer
+        memory = self.context_transformer(memory)  # [batch_size, 1, d_model]
         
         # Create positional queries for each time step
-        pos_queries = torch.zeros(self.seq_len, batch_size, memory.size(2), device=z.device)
-        pos_queries = self.pos_encoder(pos_queries.permute(1, 0, 2)).permute(1, 0, 2)  # [seq_len, batch_size, d_model]
+        queries = self.query_embed.expand(batch_size, -1, -1)  # [batch_size, seq_len, d_model]
         
-        # Enhance queries with the query embedding network
-        queries = self.query_embed(pos_queries.permute(1, 0, 2)).permute(1, 0, 2)  # [seq_len, batch_size, d_model]
+        # Add positional encoding
+        queries = queries + self.pos_embedding(queries)
         
-        # Apply transformer decoder
-        # The decoder uses queries as the target sequence and memory as the encoder output
+        # Apply transformer decoder with cross-attention to the latent context
         output = self.transformer_decoder(
-            tgt=queries,  # [seq_len, batch_size, d_model]
-            memory=memory  # [1, batch_size, d_model]
-        )  # [seq_len, batch_size, d_model]
+            queries,  # [batch_size, seq_len, d_model]
+            context = memory  # [batch_size, 1, d_model]
+        )  # [batch_size, seq_len, d_model]
         
-        # Reshape to batch-first and project to output dimension
-        output = output.permute(1, 0, 2)  # [batch_size, seq_len, d_model]
+        # Project to output dimension
         output = self.output_projection(output)  # [batch_size, seq_len, output_dim]
         
         return output
 
 
 class ACTOR(nn.Module):
-    """ACTOR: Transformer VAE for motion sequence generation"""
+    """ACTOR: Transformer VAE for motion sequence generation using x-transformers"""
     
     def __init__(
         self, 
@@ -458,7 +457,7 @@ class ACTOR(nn.Module):
         num_decoder_layers=6,
         dim_feedforward=2048, 
         dropout=0.1,
-        use_xformers=True
+        **kwargs
     ):
         """
         Args:
@@ -472,7 +471,6 @@ class ACTOR(nn.Module):
             num_decoder_layers: number of decoder layers
             dim_feedforward: dimension of transformer feedforward network
             dropout: dropout rate
-            use_xformers: whether to use xFormers' memory-efficient attention (if available)
         """
         super(ACTOR, self).__init__()
         
@@ -480,10 +478,6 @@ class ACTOR(nn.Module):
         self.seq_len = seq_len
         self.input_dim = input_dim
         self.output_dim = output_dim
-        self.use_xformers = use_xformers and XFORMERS_AVAILABLE
-        
-        if use_xformers and not XFORMERS_AVAILABLE:
-            warnings.warn("xFormers requested but not available, falling back to standard attention")
         
         # Encoder
         self.encoder = Encoder(
@@ -494,7 +488,6 @@ class ACTOR(nn.Module):
             num_encoder_layers=num_encoder_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            use_xformers=use_xformers
         )
         
         # Decoder
@@ -507,7 +500,6 @@ class ACTOR(nn.Module):
             num_decoder_layers=num_decoder_layers,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            use_xformers=use_xformers
         )
     
     def encode(self, x):
@@ -566,7 +558,7 @@ class ACTOR(nn.Module):
         
         return output, z, mu, logvar
     
-    def sample(self, batch_size=1, device='gpu'):
+    def sample(self, batch_size=1, device='cuda'):
         """
         Sample new motion sequences without input
         
@@ -585,6 +577,60 @@ class ACTOR(nn.Module):
         output = self.decode(z)
         
         return output
+    
+    def compute_loss(self, prediction, target, mu, logvar, kl_weight_override=None):
+        """
+        Compute VAE loss
+        
+        Args:
+            prediction: predicted output
+            target: ground truth
+            mu: mean of latent space
+            logvar: log variance of latent space
+            kl_weight_override: optional override for KL weight
+            
+        Returns:
+            total_loss: combined loss
+            recon_loss: reconstruction loss
+            kl_loss: KL divergence loss
+        """
+        # Use default or override KL weight
+        kl_weight = 0.01 if kl_weight_override is None else kl_weight_override
+            
+        # Reconstruction loss
+        recon_loss = F.mse_loss(prediction, target)
+        
+        # KL divergence
+        kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+        
+        # Total loss
+        total_loss = recon_loss + kl_weight * kl_loss
+        
+        return total_loss, recon_loss, kl_loss
+    
+    def update_kl_weight(self, epoch, total_epochs):
+        """
+        Update KL weight using a cyclical schedule
+        
+        Args:
+            epoch: current epoch
+            total_epochs: total number of epochs
+            
+        Returns:
+            kl_weight: updated KL weight
+        """
+        # Simple cyclical schedule
+        cycle = total_epochs // 4
+        progress = (epoch % cycle) / cycle
+        
+        if epoch < cycle:
+            # Warm-up
+            kl_weight = min(0.01, progress * 0.01)
+        else:
+            # Cyclical
+            kl_weight = 0.01 * (1 + math.sin(2 * math.pi * progress))
+        
+        return kl_weight
 
 
 def kl_divergence_loss(mu, logvar):
@@ -665,17 +711,13 @@ def main():
     batch_size = 4
     test_input = torch.randn(batch_size, seq_len, input_dim)
     
-    # Print xFormers availability
-    print(f"xFormers available: {XFORMERS_AVAILABLE}")
-    
     # Initialize the model
     model = ACTOR(
         input_dim=input_dim,
         output_dim=output_dim,
         seq_len=seq_len,
         latent_dim=latent_dim,
-        use_xformers=True  # Will fall back to standard attention if xFormers is not available
-    )
+    ).to('mps')
     
     # Set model to evaluation mode
     model.eval()

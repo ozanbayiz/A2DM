@@ -1,13 +1,15 @@
 defaults:
-  - model: videovaeplus
-  - dataset: solo_pose
+  - model: convnext
+  - dataset: solo_full
   - loss: mse
 
 training:
-  device: cpu
-  epochs: 100
+  device: mps
+  distributed: false
+  epochs: 1000
   batch_size: 64
   learning_rate: 0.0001
   weight_decay: 0.00001
+  kl_weight: 1
   gradient_clipping: 1.0
   early_stopping: 10

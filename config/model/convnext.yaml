@@ -2,8 +2,8 @@ name: convnext
 params:
   latent_dim: 128
   T_in: 100
-  input_dim: 63 
-  encoder_output_channels: 64
+  input_dim: 69 
+  encoder_output_channels: 128
   down_t: 2
   stride_t: 2
   width: 128
