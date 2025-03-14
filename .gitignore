@@ -1,0 +1,7 @@
+.DS_Store
+__pycache__
+checkpoints
+outputs
+logs
+sns_slahmr_64
+sns_slahmr
