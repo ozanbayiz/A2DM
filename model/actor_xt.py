@@ -1,30 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
+from x_transformers import Encoder, Decoder, TransformerWrapper, ContinuousTransformerWrapper
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000):
-        super().__init__()
-        # Create standard positional encodings
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(1, max_len, d_model)
-        pe[0, :, 0::2] = torch.sin(position * div_term)
-        pe[0, :, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x, seq_len=None):
-        """
-        Args:
-            x: Tensor, shape [batch_size, seq_len, embedding_dim]
-            seq_len: Optional override for sequence length
-        """
-        if seq_len is None:
-            seq_len = x.size(1)
-        return self.pe[:, :seq_len]
-
-class ACTORVAE(nn.Module):
+class ACTORVAE_XT(nn.Module):
     def __init__(
         self,
         pose_dim,           # Dimension of pose parameters (SMPL)
@@ -41,28 +20,31 @@ class ACTORVAE(nn.Module):
         self.hidden_dim = hidden_dim
         self.max_seq_len = max_seq_len
         
-        # Input projection: from pose_dim to hidden_dim
-        self.input_projection = nn.Linear(pose_dim, hidden_dim)
-        
         # Special tokens for mean and log-variance
         self.mu_token = nn.Parameter(torch.randn(1, 1, hidden_dim))
         self.logvar_token = nn.Parameter(torch.randn(1, 1, hidden_dim))
-        
-        # Positional encoding for sequence
-        self.pos_encoder = PositionalEncoding(hidden_dim, max_seq_len)
+
+        self.input_projection = nn.Linear(pose_dim, hidden_dim)
+        self.output_projection = nn.Linear(hidden_dim, pose_dim)
         
         # Encoder transformer
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim,
-            nhead=num_heads,
-            dim_feedforward=hidden_dim * 4,
-            dropout=dropout,
-            activation='gelu',
-            batch_first=True
-        )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, 
-            num_layers=num_layers
+        self.encoder = ContinuousTransformerWrapper(
+            dim_in=pose_dim,
+            dim_out=hidden_dim,
+            max_seq_len=max_seq_len,
+            attn_layers=Encoder(
+                dim=hidden_dim,
+                depth=num_layers,
+                heads=num_heads,
+                attn_dropout=dropout,
+                ff_dropout=dropout,
+                ff_mult=4,
+                ff_glu=True,                # Use GLU variant in feedforward for better performance
+                pre_norm=True,              # Use pre-norm for better gradient flow
+                attn_head_scale=True,       # From Normformer for better convergence
+                use_rmsnorm=True,           # Use RMSNorm for better stability
+                rel_pos_bias=True           # Use relative position bias
+            )
         )
         
         # Projection from hidden dim to latent space
@@ -76,24 +58,24 @@ class ACTORVAE(nn.Module):
         self.query_embeddings = nn.Parameter(torch.randn(1, max_seq_len, hidden_dim))
         
         # Decoder transformer
-        decoder_layer = nn.TransformerDecoderLayer(
-            d_model=hidden_dim,
-            nhead=num_heads,
-            dim_feedforward=hidden_dim * 4,
-            dropout=dropout,
-            activation='gelu',
-            batch_first=True
-        )
-        self.transformer_decoder = nn.TransformerDecoder(
-            decoder_layer,
-            num_layers=num_layers
-        )
-        
-        # Output projection from hidden to pose
-        self.output_projection = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, pose_dim)
+        self.decoder = ContinuousTransformerWrapper(
+            dim_in=hidden_dim,              # Input dimension is hidden_dim for query embeddings
+            dim_out=hidden_dim,               # Output dimension is pose_dim directly
+            max_seq_len=max_seq_len,
+            attn_layers=Decoder(
+                dim=hidden_dim,
+                depth=num_layers,
+                heads=num_heads,
+                attn_dropout=dropout,
+                ff_dropout=dropout,
+                ff_mult=4,
+                ff_glu=True,                # Use GLU variant in feedforward
+                cross_attend=True,          # Enable cross-attention
+                pre_norm=True,              # Use pre-norm for better gradient flow
+                attn_head_scale=True,       # From Normformer
+                use_rmsnorm=True,           # Use RMSNorm
+                rel_pos_bias=True           # Use relative position bias
+            )
         )
         
         # Initialize parameters
@@ -118,28 +100,24 @@ class ACTORVAE(nn.Module):
             z: Sampled latent vector
         """
         batch_size, seq_len, _ = x.shape
+
+        # Process input through continuous transformer
+        x = self.encoder(
+            x,
+            prepend_embeds=torch.cat(
+                [
+                    self.mu_token.expand(batch_size, -1, -1), 
+                    self.logvar_token.expand(batch_size, -1, -1)
+                ],
+                dim=1
+            ),
+            prepend_mask=torch.ones(batch_size, 2, device=x.device).bool()
+        )  # [B, T, H]
         
-        # Project input to hidden dimension
-        x = self.input_projection(x)  # [B, T, H]
+        mu_hidden = x[:, 0]  # Take first token output [B, H]
+        logvar_hidden = x[:, 1]  # Take first token output [B, H]
         
-        # Add positional encoding
-        pos_encoding = self.pos_encoder(x)  # [1, T, H]
-        x = x + pos_encoding  # [B, T, H]
-        
-        # Prepend special tokens for mu and logvar
-        mu_tokens = self.mu_token.expand(batch_size, -1, -1)  # [B, 1, H]
-        logvar_tokens = self.logvar_token.expand(batch_size, -1, -1)  # [B, 1, H]
-        
-        # Concatenate special tokens with input
-        x_with_special = torch.cat([mu_tokens, logvar_tokens, x], dim=1)  # [B, 2+T, H]
-        
-        # Pass through transformer encoder
-        encoder_output = self.transformer_encoder(x_with_special)  # [B, 2+T, H]
-        
-        # Extract and project special token outputs
-        mu_hidden = encoder_output[:, 0]  # [B, H]
-        logvar_hidden = encoder_output[:, 1]  # [B, H]
-        
+        # Project to latent space
         mu = self.mu_projection(mu_hidden)  # [B, latent_dim]
         logvar = self.logvar_projection(logvar_hidden)  # [B, latent_dim]
         
@@ -164,29 +142,26 @@ class ACTORVAE(nn.Module):
         batch_size = z.shape[0]
         seq_len = seq_len or self.max_seq_len
         
-        # Project latent to hidden dimension and repeat for memory
+        # Project latent to hidden dimension and prepare as context
         z_hidden = self.latent_to_hidden(z)  # [B, H]
-        memory = z_hidden.unsqueeze(1)  # [B, 1, H]
+        context = z_hidden.unsqueeze(1)  # [B, 1, H]
         
         # Get query embeddings for desired sequence length
-        query_emb = self.query_embeddings[:, :seq_len, :]  # [1, seq_len, H]
+        query_emb = self.query_embeddings[:, :seq_len, :].expand(batch_size, -1, -1)  # [B, seq_len, H]
         
-        # Add positional encoding to query embeddings
-        pos_encoding = self.pos_encoder(query_emb, seq_len)  # [1, seq_len, H]
-        query_emb = query_emb + pos_encoding  # [1, seq_len, H]
+        # Create masks
+        query_mask = torch.ones(batch_size, seq_len, device=z.device).bool()
+        context_mask = torch.ones(batch_size, 1, device=z.device).bool()
         
-        # Expand queries to batch size
-        query_emb = query_emb.expand(batch_size, -1, -1)  # [B, seq_len, H]
-        
-        # Pass through transformer decoder
-        # No need for attention mask since we're doing non-autoregressive decoding
-        decoder_output = self.transformer_decoder(
-            tgt=query_emb,  # [B, seq_len, H]
-            memory=memory,  # [B, 1, H]
-        )  # [B, seq_len, H]
-        
-        # Project back to pose space
-        output = self.output_projection(decoder_output)  # [B, seq_len, pose_dim]
+        # Use decoder directly with continuous values
+        output = self.decoder(
+            query_emb,
+            mask=query_mask,
+            context=context,
+            context_mask=context_mask
+        )  # [B, seq_len, pose_dim]
+
+        output = self.output_projection(output)
         
         return output
     
@@ -201,7 +176,6 @@ class ACTORVAE(nn.Module):
             reconstructed: Reconstructed motion sequence
             mu: Mean of latent distribution
             logvar: Log-variance of latent distribution
-            z: Sampled latent vector
         """
         # Encode input to latent space
         mu, logvar, z = self.encode(x)
@@ -268,6 +242,7 @@ class ACTORVAE(nn.Module):
             mu: Mean of latent distribution
             logvar: Log-variance of latent distribution
             kld_weight: Weight for KL divergence term
+            kl_weight_override: Override for KL weight
             
         Returns:
             total_loss: Combined loss
@@ -280,8 +255,11 @@ class ACTORVAE(nn.Module):
         # KL divergence loss
         kld_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
         
+        # Apply weight override if provided
+        effective_kld_weight = kl_weight_override if kl_weight_override is not None else kld_weight
+        
         # Total loss
-        total_loss = recon_loss + kld_weight * kld_loss
+        total_loss = recon_loss + effective_kld_weight * kld_loss
         
         return total_loss, recon_loss, kld_loss
 
@@ -306,6 +284,7 @@ def main():
         dropout=0.1,
         max_seq_len=120
     ).to(device)
+    print(f"Successfully created model with {sum(p.numel() for p in model.parameters()):,} parameters")
     
     # Create random input tensor
     x = torch.randn(batch_size, seq_len, pose_dim).to(device)

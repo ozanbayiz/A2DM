@@ -300,10 +300,12 @@ def main():
     parser = argparse.ArgumentParser(description="Flexible Human Motion Visualization")
     
     # Input paths
-    parser.add_argument("--config_path", type=str, default="outputs/convnext_solo_full/config/config.yaml",
+    parser.add_argument("--config_path", type=str, default="outputs/actor_solo_pose_6d/config/config.yaml",
                         help="Path to model config JSON file")
-    parser.add_argument("--data_path", type=str, default="data/sns_slahmr_64/dancing_oKULwuO54bc_500_600.npz",
+    parser.add_argument("--data_path", type=str, default="",
                         help="Path to motion data file (.npz)")
+    parser.add_argument("--data_dir", type=str, default="data/sns_slahmr_64",
+                        help="Path to motion data directory")
     parser.add_argument("--smpl_model", type=str, default="smpl_neutral.npz",
                         help="Path to SMPL model file")
     
@@ -336,11 +338,12 @@ def main():
         model.eval()
         
         dataset_class = get_dataset(config["dataset"]["name"], 
-                                  data_dir=str(Path(args.data_path).parent),
+                                  data_dir=args.data_dir,
                                   person_idx=args.person_idx)
         
         # Load the specific data file and get ground truth data
-        data_path = Path(args.data_path)
+        data_path = Path(args.data_path) if args.data_path else None
+        print(f"data_path: {data_path}")
         gt_data, transformed_data = dataset_class.get_gt_data(data_path)
         
         print(f"Loaded ground truth data from {data_path}")

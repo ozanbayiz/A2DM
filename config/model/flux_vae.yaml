@@ -1,0 +1,11 @@
+name: flux_vae
+params:
+  seq_length: 100
+  in_channels: 126
+  ch: 128
+  out_ch: 126
+  ch_mult: [1, 2, 4]
+  num_res_blocks: 2
+  z_channels: 256
+  scale_factor: 0.18215
+  shift_factor: 0.0

@@ -9,11 +9,8 @@ from utils.rotation_transformations import (
     inverse_transform_global_orientation,
     transform_relative_translation,
     inverse_transform_translation,
-    axis_angle_to_matrix,
-    matrix_to_6d,
-    matrix_to_axis_angle,
-    sixd_to_matrix
 )
+from utils.rotation import angle_axis_to_rot6d, rot6d_to_angle_axis
 
 class SoloDatasetBase(Dataset):
     """Base class for single-person motion datasets with common functionality."""
@@ -43,11 +40,13 @@ class SoloDatasetBase(Dataset):
         Returns:
             Dictionary containing loaded data
         """
+        if not idx_or_path:
+            idx_or_path = np.random.randint(0, len(self.file_paths))
+
         if isinstance(idx_or_path, int):
             file_path = self.data_dir / self.file_paths[idx_or_path]
         else:
             file_path = Path(idx_or_path)
-        
         return np.load(file_path)
     
     def get_mask(self, data: np.ndarray, ref_data: np.ndarray) -> np.ndarray:
@@ -220,8 +219,8 @@ class SoloPose6DDataset(SoloDatasetBase):
         data = self.load_data(idx)
         
         # Load pose and convert to 6D representation
-        pose = data['pose_body'][self.person_idx]
-        pose_6d = self._convert_to_6d(pose)
+        pose = data['pose_body'][self.person_idx].reshape(100, 21, 3)
+        pose_6d = angle_axis_to_rot6d(torch.tensor(pose, dtype=torch.float32))
         
         # Create mask (adjust for 6D representation)
         if 'track_mask' in data:
@@ -229,34 +228,7 @@ class SoloPose6DDataset(SoloDatasetBase):
         else:
             mask = np.ones_like(pose[:, 0:1])
         
-        return pose_6d, torch.tensor(mask, dtype=torch.bool)
-    
-    def _convert_to_6d(self, pose_data: np.ndarray) -> torch.Tensor:
-        """
-        Convert axis-angle pose data to 6D representation.
-        
-        Args:
-            pose_data: Pose data in axis-angle format [T, J*3]
-            
-        Returns:
-            Pose data in 6D representation [T, J*6]
-        """
-        pose_tensor = torch.tensor(pose_data, dtype=torch.float32)
-        
-        # Get dimensions
-        seq_len = pose_tensor.shape[0]
-        total_dims = pose_tensor.shape[1]
-        num_joints = total_dims // 3
-        
-        # Reshape to process all rotations at once
-        pose_reshaped = pose_tensor.reshape(-1, 3)
-        
-        # Convert to rotation matrices then to 6D
-        rotation_matrices = axis_angle_to_matrix(pose_reshaped)
-        pose_6d = matrix_to_6d(rotation_matrices)
-        
-        # Reshape back to sequence format
-        return pose_6d.reshape(seq_len, num_joints * 6)
+        return pose_6d.reshape(100, -1), torch.tensor(mask, dtype=torch.bool)
     
     def get_gt_data(self, path: str) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
         data = self.load_data(path)
@@ -267,7 +239,7 @@ class SoloPose6DDataset(SoloDatasetBase):
         result['pose_body'] = torch.tensor(pose, dtype=torch.float32)
         
         # Convert to 6D representation
-        transformed_data = self._convert_to_6d(pose)
+        transformed_data = angle_axis_to_rot6d(torch.tensor(pose.reshape(100, 21, 3), dtype=torch.float32)).reshape(100, -1)
         
         return result, transformed_data
     
@@ -277,8 +249,7 @@ class SoloPose6DDataset(SoloDatasetBase):
         
         # Reshape to process rotations
         pose_reshaped = data.reshape(-1, 6)
-        rotation_matrices = sixd_to_matrix(pose_reshaped)
-        pose = matrix_to_axis_angle(rotation_matrices)
+        pose = rot6d_to_angle_axis(pose_reshaped)
         pose = pose.reshape(seq_len, -1)  # Reshape back to sequence format
         
         result = self.create_zero_motion(seq_len)

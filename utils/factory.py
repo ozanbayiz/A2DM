@@ -8,7 +8,11 @@ import torch
 from model.convnext import ConvNextVAE
 from model.transformer_vae import TransformerVAE
 from model.hierarchical_transformer import HierarchicalTransformerVAE
+from model.spatial_transformer import SpatialTransformerVAE
 from model.videovaeplus import VideoVAEPlus
+from model.actor import ACTORVAE
+from model.actor_xt import ACTORVAE_XT
+from model.flux_vae import FluxVAE
 from utils.loss import (
     combined_motion_loss, 
     geodesic_loss, 
@@ -34,7 +38,11 @@ def get_model(name: str, config: Dict[str, Any] = None) -> nn.Module:
         'convnext': ConvNextVAE,
         'transformer': TransformerVAE,
         'hierarchical_transformer': HierarchicalTransformerVAE,
-        'videovaeplus': VideoVAEPlus
+        'videovaeplus': VideoVAEPlus,
+        'spatial_transformer': SpatialTransformerVAE,
+        'actor': ACTORVAE,
+        'actor_xt': ACTORVAE_XT,
+        'flux_vae': FluxVAE
     }
     
     if name not in models:

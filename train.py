@@ -33,7 +33,7 @@ def compute_loss(
     # Apply mask if provided
     if mask is not None:
         # Expand mask to match data dimensions
-        expanded_mask = mask.expand_as(data)
+        expanded_mask = mask.unsqueeze(2).expand_as(data)
         valid_data = data * expanded_mask
         valid_recon = recon * expanded_mask
     else:
@@ -281,7 +281,7 @@ def main(cfg: DictConfig) -> None:
                 epoch=epoch,
                 total_epochs=cfg.training.epochs,
                 timer=timer,
-                grad_clip=cfg.training.get('gradient_clipping'),
+                grad_clip=cfg.training.get('gradient_clipping', None),
                 distributed=distributed,
                 rank=rank
             )
@@ -323,6 +323,7 @@ def main(cfg: DictConfig) -> None:
                         losses,
                         output_path=plots_dir / f"training_curves_epoch_{epoch+1}.png",
                         model_name=cfg.model.name,
+                        dataset_name=cfg.dataset.name,
                         num_params=num_params,
                         logger=logger
                     )

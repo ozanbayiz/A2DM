@@ -1,0 +1,8 @@
+name: spatial_transformer
+params:
+  input_dim: 126
+  time_dim: 100
+  latent_dim: 256
+  depth: 4
+  heads: 4
+  dropout_prob: 0.1

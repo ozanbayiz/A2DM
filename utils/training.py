@@ -171,6 +171,7 @@ def plot_training_curves(
     losses: Dict, 
     output_path: str = 'training_curves.png',
     model_name: str = None,
+    dataset_name: str = None,
     num_params: int = None,
     logger: logging.Logger = None
 ) -> None:
@@ -180,7 +181,7 @@ def plot_training_curves(
     # Title
     title = "Training Curves"
     if model_name:
-        title = f"{model_name} VAE Training Curves"
+        title = f"{model_name} VAE for {dataset_name}"
     if num_params:
         title += f" ({num_params:,} parameters)"
     plt.suptitle(title, fontsize=16)

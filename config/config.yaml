@@ -1,15 +1,14 @@
 defaults:
-  - model: convnext
-  - dataset: solo_full
+  - model: flux_vae
+  - dataset: solo_pose_6d
   - loss: mse
 
 training:
   device: mps
   distributed: false
-  epochs: 1000
+  epochs: 150
   batch_size: 64
   learning_rate: 0.0001
   weight_decay: 0.00001
-  kl_weight: 1
-  gradient_clipping: 1.0
+  kl_weight: 0
   early_stopping: 10

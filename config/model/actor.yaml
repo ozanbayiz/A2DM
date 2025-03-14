@@ -1,0 +1,8 @@
+name: actor
+params:
+  pose_dim: 126
+  latent_dim: 512
+  hidden_dim: 512
+  num_layers: 4
+  num_heads: 4
+  max_seq_len: 100
